@@ -1642,7 +1642,7 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
             ui.post(() -> {
                 addLog("OTA in progress — re-attaching via binder...");
                 if (installBtnBar   != null) installBtnBar.setProgress(0);
-                if (installBtnLabel != null) installBtnLabel.setText("DOWNLOADING: 0%");
+                if (installBtnLabel != null) installBtnLabel.setText("INSTALLING: 0%");
                 if (btnCancelOta    != null) btnCancelOta.setVisibility(View.VISIBLE);
                 getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             });
@@ -2853,6 +2853,7 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
             // Guard early so a second Install tap cannot race past startSelectedInstall()'s
             // tailRunning check while this thread is still setting up (which can take seconds).
             tailRunning = true;
+            cancelPending = false;  // prevent stale ota-cancel thread from killing this session
 
             addStatus("Checking tools...");
             ensureTools();
@@ -3090,13 +3091,17 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
                     // Force-reset state immediately — bypass claimOtaResult so the UI
                     // always resets even if onComplete(48) already claimed the result.
                     otaCancelledByUser = true;
+                    cancelPending = true;
                     tailRunning = false;
                     otaEpoch++;   // invalidate any in-flight callbacks
                     addLog("OTA cancelled by user");
                     resetOtaState();
-                    // Fire-and-forget: tell update_engine to stop
+                    // Fire-and-forget: tell update_engine to stop.
+                    // Guard: skip if a new install already started (cancelPending cleared).
                     new Thread(() -> {
+                        if (!cancelPending) return;
                         try { service.cancelUpdate(); } catch (Throwable ignored) {}
+                        cancelPending = false;
                     }, "ota-cancel").start();
                 }, "Keep installing", null);
     }
@@ -3252,7 +3257,7 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
         switch (status) {
             case 1:  return "Checking";        // CHECKING_FOR_UPDATE
             case 2:  return "Preparing";       // UPDATE_AVAILABLE
-            case 3:  return "Downloading";     // DOWNLOADING
+            case 3:  return "Installing";      // DOWNLOADING
             case 4:  return "Verifying";       // VERIFYING_UPDATE
             case 5:  return "Finalizing";      // FINALIZING
             case 6:  return "Done";            // UPDATED_NEED_REBOOT
@@ -3294,6 +3299,7 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
     private volatile boolean autoFormatData = true;
     private volatile boolean isDowngrade = false;
     private volatile boolean otaCancelledByUser = false;
+    private volatile boolean cancelPending      = false;
 
 
     // OTA run state: otaEpoch invalidates stale log tails / binder callbacks,
@@ -3328,7 +3334,7 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
                     if (epoch != otaEpoch) return;
                     if (status == 6) { onOtaSuccess(epoch); return; }
                     int pct = Math.round(fraction * 100);
-                    String stage = status == 5 ? "Finalizing" : status == 4 ? "Verifying" : status == 3 ? "Downloading" : "Installing";
+                    String stage = status == 5 ? "Finalizing" : status == 4 ? "Verifying" : status == 3 ? "Installing" : "Installing";
                     ui.post(() -> {
                         if (installBtnBar != null) installBtnBar.setProgress(pct * 10);
                         if (installBtnLabel != null) installBtnLabel.setText(stage.toUpperCase() + ": " + pct + "%");
@@ -3392,6 +3398,12 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
             String err = service.startUpdate(payloadPath, payloadOffset, payloadSize, headers, cb);
             if (!err.isEmpty()) { addLog("startUpdate: " + err); return false; }
             addLog("payload submitted via binder (Shizuku → update_engine_stable)");
+            // Watchdog: if engine never fires a non-IDLE callback, fail after 30s
+            new Thread(() -> {
+                try { Thread.sleep(30_000); } catch (Throwable ignored) {}
+                if (epoch == otaEpoch && tailRunning)
+                    onOtaFailure(epoch, "update_engine did not start (timed out after 30s)");
+            }, "ota-watchdog").start();
             return true;
         } catch (Throwable t) {
             addLog("startUpdateBinder: " + t);
