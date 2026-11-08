@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App icon background: dark mode (deep dark purple) -->
+    <color name="ic_launcher_background">#FF0D0A2E</color>
+</resources>
