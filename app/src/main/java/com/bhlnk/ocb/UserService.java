@@ -2,6 +2,7 @@ package com.bhlnk.ocb;
 
 import android.os.IBinder;
 import android.os.IUpdateEngine;
+import android.os.IUpdateEngineCallback;
 import android.os.IUpdateEngineStable;
 import android.os.IUpdateEngineStableCallback;
 import android.os.ParcelFileDescriptor;
@@ -623,6 +624,30 @@ public class UserService extends IUserService.Stub {
             return "reset";
         } catch (Throwable t) {
             return "reset failed: " + t;
+        }
+    }
+
+    @Override
+    public int getEngineStatus() {
+        try {
+            final int[] result = {-1};
+            final java.util.concurrent.CountDownLatch latch =
+                    new java.util.concurrent.CountDownLatch(1);
+            IUpdateEngineCallback probeCb = new IUpdateEngineCallback.Stub() {
+                @Override public void onStatusUpdate(int status, float pct) {
+                    result[0] = status;
+                    latch.countDown();
+                }
+                @Override public void onPayloadApplicationComplete(int err) {
+                    latch.countDown();
+                }
+            };
+            getUpdateEngine().bind(probeCb);
+            latch.await(2, java.util.concurrent.TimeUnit.SECONDS);
+            try { getUpdateEngine().unbind(probeCb); } catch (Throwable ignored) {}
+            return result[0];
+        } catch (Throwable t) {
+            return -1;
         }
     }
 

@@ -2956,22 +2956,37 @@ LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(-1, -2);
                 }
             }
 
-            // Cancel any in-progress session so a different file can start from 0%.
-            // If the same file is re-submitted, update_engine resumes from its checkpoint anyway.
-            String engineState = sh("timeout 2 runcon u:r:shell:s0 update_engine_client --follow 2>&1"
-                    + " | grep onStatusUpdate | tail -1");
-            if (!engineState.contains("IDLE") && !engineState.trim().isEmpty()) {
+            // Verify engine is IDLE before submitting — use binder (reliable, no shell race).
+            int engSt = -1;
+            try { engSt = service.getEngineStatus(); } catch (Throwable ignored) {}
+            addLog("engine status before install: " + engSt);
+            if (engSt != 0) {  // 0 = IDLE
                 addStatus("Cancelling previous session...");
                 try {
                     service.cancelUpdate();
-                    Thread.sleep(500);
-                    service.resetStatus();
-                    Thread.sleep(500);
                 } catch (Throwable t2) {
-                    sh("update_engine_client --cancel 2>/dev/null; sleep 1");
-                    sh("update_engine_client --reset_status 2>/dev/null; sleep 1");
+                    sh("update_engine_client --cancel 2>/dev/null");
                 }
-                addLog("engine reset done");
+                // Poll until IDLE — max 5 s (10 × 500 ms)
+                for (int i = 0; i < 10; i++) {
+                    Thread.sleep(500);
+                    try { engSt = service.getEngineStatus(); } catch (Throwable ignored) {}
+                    if (engSt == 0) break;
+                }
+                if (engSt != 0) {
+                    // Last resort: force resetStatus
+                    try { service.resetStatus(); } catch (Throwable ignored) {}
+                    Thread.sleep(500);
+                    try { engSt = service.getEngineStatus(); } catch (Throwable ignored) {}
+                }
+                addLog("engine after reset: " + engSt);
+                if (engSt != 0 && engSt != -1) {
+                    tailRunning = false;
+                    showAlert("Engine busy",
+                            "update_engine is still running (status " + engSt + "). "
+                            + "Wait a moment and try again.", AlertType.ERROR);
+                    return;
+                }
             }
 
             beginOta(isPartialOta);

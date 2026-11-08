@@ -36,4 +36,6 @@ interface IUserService {
     String rebindCallback(IUpdateCallback cb) = 21;
     /** Name of the device-specific timer binary, e.g. "timer_PLG110". */
     String timerName() = 22;
+    /** Query update_engine current status code (0=IDLE). Returns -1 if unreachable. */
+    int getEngineStatus() = 23;
 }
